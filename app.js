@@ -371,6 +371,9 @@ window.addEventListener('load', async () => {
         // Load global stats (works without wallet connection)
         await loadGlobalStats();
 
+        // Load charity list (works without wallet connection)
+        await loadCharityList();
+
     } else {
         showToast('Please install MetaMask to use this DApp!', 'error');
         console.error('MetaMask is not installed');
@@ -598,8 +601,6 @@ async function loadUserStats() {
 }
 
 async function loadCharityList() {
-    if (!userRole.isAdmin) return;
-
     try {
         // Note: In production, you'd want to store charity addresses in an array in the contract
         // For now, we'll track them locally when they're added/removed
@@ -622,9 +623,15 @@ async function loadCharityList() {
 function createCharityListItem(address) {
     const div = document.createElement('div');
     div.className = 'charity-item';
+
+    // Only show remove button if user is admin
+    const removeButton = userRole.isAdmin
+        ? `<button class="btn-remove" onclick="removeCharity('${address}')">Remove</button>`
+        : '';
+
     div.innerHTML = `
         <span class="charity-address">${address}</span>
-        <button class="btn-remove" onclick="removeCharity('${address}')">Remove</button>
+        ${removeButton}
     `;
     return div;
 }

@@ -220,6 +220,7 @@ body {
 .stats-section,
 .personal-stats,
 .action-section,
+.charities-section,
 .activities-section {
     margin-bottom: var(--spacing-xl);
 }
