@@ -374,6 +374,9 @@ window.addEventListener('load', async () => {
         // Load charity list (works without wallet connection)
         await loadCharityList();
 
+        // Load recent activities (works without wallet connection)
+        await loadRecentActivities();
+
     } else {
         showToast('Please install MetaMask to use this DApp!', 'error');
         console.error('MetaMask is not installed');
@@ -935,34 +938,75 @@ async function loadRecentActivities() {
     try {
         const activitiesDiv = document.getElementById('recentActivities');
 
+        // If contract not initialized, create read-only instance
+        let tempWeb3, tempContract;
+        let useTemp = false;
+
         if (!contract) {
-            activitiesDiv.innerHTML = '<div class="empty-state"><p>Connect your wallet to view recent activities</p></div>';
-            return;
+            try {
+                // Create read-only instance to fetch events
+                const rpcEndpoints = [
+                    'https://rpc.sepolia.org',
+                    'https://ethereum-sepolia-rpc.publicnode.com',
+                    'https://sepolia.gateway.tenderly.co'
+                ];
+
+                let success = false;
+
+                for (const rpc of rpcEndpoints) {
+                    try {
+                        tempWeb3 = new Web3(new Web3.providers.HttpProvider(rpc));
+                        tempContract = new tempWeb3.eth.Contract(CONFIG.CONTRACT_ABI, CONFIG.CONTRACT_ADDRESS);
+
+                        // Test the connection
+                        await tempContract.methods.admin().call();
+                        success = true;
+                        useTemp = true;
+                        console.log('Connected to RPC for recent activities:', rpc);
+                        break;
+                    } catch (e) {
+                        console.log('Failed to connect to RPC:', rpc);
+                        continue;
+                    }
+                }
+
+                if (!success) {
+                    activitiesDiv.innerHTML = '<div class="empty-state"><p>Unable to load recent activities</p></div>';
+                    return;
+                }
+            } catch (error) {
+                console.error('Error creating temp contract:', error);
+                activitiesDiv.innerHTML = '<div class="empty-state"><p>Unable to load recent activities</p></div>';
+                return;
+            }
         }
 
+        const activeWeb3 = useTemp ? tempWeb3 : web3;
+        const activeContract = useTemp ? tempContract : contract;
+
         // Get past events (last 50 blocks for better performance)
-        const currentBlock = await web3.eth.getBlockNumber();
+        const currentBlock = await activeWeb3.eth.getBlockNumber();
         const fromBlock = Math.max(0, currentBlock - 50);
 
         const allEvents = [];
 
         // Get all event types
-        const donations = await contract.getPastEvents('DonationMade', {
+        const donations = await activeContract.getPastEvents('DonationMade', {
             fromBlock: fromBlock,
             toBlock: 'latest'
         });
 
-        const withdrawals = await contract.getPastEvents('WithdrawalMade', {
+        const withdrawals = await activeContract.getPastEvents('WithdrawalMade', {
             fromBlock: fromBlock,
             toBlock: 'latest'
         });
 
-        const charitiesAdded = await contract.getPastEvents('CharityAdded', {
+        const charitiesAdded = await activeContract.getPastEvents('CharityAdded', {
             fromBlock: fromBlock,
             toBlock: 'latest'
         });
 
-        const charitiesRemoved = await contract.getPastEvents('CharityRemoved', {
+        const charitiesRemoved = await activeContract.getPastEvents('CharityRemoved', {
             fromBlock: fromBlock,
             toBlock: 'latest'
         });
@@ -973,9 +1017,11 @@ async function loadRecentActivities() {
         allEvents.push(...charitiesAdded.map(e => ({ ...e, type: 'charity-added' })));
         allEvents.push(...charitiesRemoved.map(e => ({ ...e, type: 'charity-removed' })));
 
-        // Track charities from events
-        charitiesAdded.forEach(e => charityAddresses.add(e.returnValues.charity));
-        charitiesRemoved.forEach(e => charityAddresses.delete(e.returnValues.charity));
+        // Track charities from events (only if not already loaded)
+        if (charityAddresses.size === 0) {
+            charitiesAdded.forEach(e => charityAddresses.add(e.returnValues.charity));
+            charitiesRemoved.forEach(e => charityAddresses.delete(e.returnValues.charity));
+        }
 
         allEvents.sort((a, b) => b.blockNumber - a.blockNumber);
 
