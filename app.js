@@ -354,7 +354,7 @@ window.addEventListener('load', async () => {
     if (typeof window.ethereum !== 'undefined') {
         console.log('MetaMask is installed!');
 
-        // Initialize Web3
+        // Initialize Web3 immediately for utility functions
         web3 = new Web3(window.ethereum);
 
         // Set up event listeners
@@ -556,8 +556,35 @@ async function loadGlobalStats() {
     try {
         if (!contract) {
             // If contract not initialized, create a read-only instance using public RPC
-            const tempWeb3 = new Web3(new Web3.providers.HttpProvider('https://eth-sepolia.public.blastapi.io'));
-            const tempContract = new tempWeb3.eth.Contract(CONFIG.CONTRACT_ABI, CONFIG.CONTRACT_ADDRESS);
+            // Try multiple RPC endpoints for better reliability
+            const rpcEndpoints = [
+                'https://rpc.sepolia.org',
+                'https://ethereum-sepolia-rpc.publicnode.com',
+                'https://sepolia.gateway.tenderly.co'
+            ];
+
+            let tempWeb3, tempContract;
+            let success = false;
+
+            for (const rpc of rpcEndpoints) {
+                try {
+                    tempWeb3 = new Web3(new Web3.providers.HttpProvider(rpc));
+                    tempContract = new tempWeb3.eth.Contract(CONFIG.CONTRACT_ABI, CONFIG.CONTRACT_ADDRESS);
+
+                    // Test the connection
+                    await tempContract.methods.getTotalDonations().call();
+                    success = true;
+                    console.log('Connected to RPC:', rpc);
+                    break;
+                } catch (e) {
+                    console.log('Failed to connect to RPC:', rpc, e.message);
+                    continue;
+                }
+            }
+
+            if (!success) {
+                throw new Error('All RPC endpoints failed');
+            }
 
             const totalDonations = await tempContract.methods.getTotalDonations().call();
             const availableFunds = await tempContract.methods.getAvailableFunds().call();
@@ -602,10 +629,72 @@ async function loadUserStats() {
 
 async function loadCharityList() {
     try {
-        // Note: In production, you'd want to store charity addresses in an array in the contract
-        // For now, we'll track them locally when they're added/removed
         const charityListDiv = document.getElementById('charityList');
 
+        // If we don't have a contract yet, try to load charities from blockchain events
+        if (!contract && charityAddresses.size === 0) {
+            try {
+                // Create read-only instance to fetch events
+                const rpcEndpoints = [
+                    'https://rpc.sepolia.org',
+                    'https://ethereum-sepolia-rpc.publicnode.com',
+                    'https://sepolia.gateway.tenderly.co'
+                ];
+
+                let tempWeb3, tempContract;
+                let success = false;
+
+                for (const rpc of rpcEndpoints) {
+                    try {
+                        tempWeb3 = new Web3(new Web3.providers.HttpProvider(rpc));
+                        tempContract = new tempWeb3.eth.Contract(CONFIG.CONTRACT_ABI, CONFIG.CONTRACT_ADDRESS);
+
+                        // Test the connection
+                        await tempContract.methods.admin().call();
+                        success = true;
+                        console.log('Connected to RPC for charity list:', rpc);
+                        break;
+                    } catch (e) {
+                        console.log('Failed to connect to RPC:', rpc);
+                        continue;
+                    }
+                }
+
+                if (success) {
+                    // Get current block number
+                    const currentBlock = await tempWeb3.eth.getBlockNumber();
+                    // Look back up to 10000 blocks (adjust based on when contract was deployed)
+                    const fromBlock = Math.max(0, currentBlock - 10000);
+
+                    // Get all CharityAdded events
+                    const charitiesAdded = await tempContract.getPastEvents('CharityAdded', {
+                        fromBlock: fromBlock,
+                        toBlock: 'latest'
+                    });
+
+                    // Get all CharityRemoved events
+                    const charitiesRemoved = await tempContract.getPastEvents('CharityRemoved', {
+                        fromBlock: fromBlock,
+                        toBlock: 'latest'
+                    });
+
+                    // Build the current charity list
+                    const removedSet = new Set(charitiesRemoved.map(e => e.returnValues.charity.toLowerCase()));
+                    charitiesAdded.forEach(e => {
+                        const charityAddr = e.returnValues.charity;
+                        if (!removedSet.has(charityAddr.toLowerCase())) {
+                            charityAddresses.add(charityAddr);
+                        }
+                    });
+
+                    console.log('Loaded charities from blockchain:', charityAddresses.size);
+                }
+            } catch (error) {
+                console.error('Error loading charities from blockchain:', error);
+            }
+        }
+
+        // Display the charity list
         if (charityAddresses.size === 0) {
             charityListDiv.innerHTML = '<p class="empty-state">No charities added yet</p>';
         } else {
@@ -956,7 +1045,14 @@ function formatAddress(address) {
 }
 
 function formatEther(wei) {
-    return parseFloat(web3.utils.fromWei(wei.toString(), 'ether')).toFixed(4);
+    // Handle case where web3 might not be initialized
+    if (typeof web3 !== 'undefined' && web3.utils) {
+        return parseFloat(web3.utils.fromWei(wei.toString(), 'ether')).toFixed(4);
+    } else {
+        // Fallback: manual conversion (1 ETH = 10^18 wei)
+        const ether = parseFloat(wei.toString()) / 1e18;
+        return ether.toFixed(4);
+    }
 }
 
 function formatTimestamp(timestamp) {
